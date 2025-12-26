@@ -33,11 +33,14 @@ This project is designed for learning and practice purposes.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
+
 2. Install required libraries
 pip install -r requirements.txt
+
 3. Train the model
 python diffusion/simple_ddpm.py --train --epochs 5
 During training, sample images will be saved after each epoch.
+
 4. Generate samples
 python diffusion/simple_ddpm.py --sample
 After running this command, a file called samples.png will be created.
@@ -46,8 +49,6 @@ Output
 The model generates digit images starting from random noise using the learned reverse diffusion process.
 
 Example output can be found in samples.png.
-
-⸻
 
 Notes
 	•	This is a simplified DDPM-style implementation.
