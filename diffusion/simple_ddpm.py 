@@ -1,0 +1,125 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
+from torchvision.utils import save_image
+from tqdm import tqdm
+import math
+import argparse
+
+# -------------------------
+# Simple Denoiser Network
+# -------------------------
+class SimpleDenoiser(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(1, 32, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 32, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 1, 3, padding=1),
+        )
+
+    def forward(self, x, t):
+        return self.net(x)
+
+# -------------------------
+# Diffusion Utils
+# -------------------------
+def linear_beta_schedule(T):
+    return torch.linspace(1e-4, 0.02, T)
+
+def q_sample(x0, t, noise, sqrt_alpha_bar, sqrt_one_minus_alpha_bar):
+    return (
+        sqrt_alpha_bar[t][:, None, None, None] * x0 +
+        sqrt_one_minus_alpha_bar[t][:, None, None, None] * noise
+    )
+
+# -------------------------
+# Training
+# -------------------------
+def train(epochs=5, T=200):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Lambda(lambda x: x * 2 - 1)
+    ])
+
+    dataset = datasets.MNIST(
+        root="./data",
+        train=True,
+        download=True,
+        transform=transform
+    )
+
+    loader = DataLoader(dataset, batch_size=128, shuffle=True)
+    model = SimpleDenoiser().to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+    betas = linear_beta_schedule(T).to(device)
+    alphas = 1.0 - betas
+    alpha_bar = torch.cumprod(alphas, dim=0)
+    sqrt_alpha_bar = torch.sqrt(alpha_bar)
+    sqrt_one_minus_alpha_bar = torch.sqrt(1 - alpha_bar)
+
+    for epoch in range(epochs):
+        pbar = tqdm(loader, desc=f"Epoch {epoch+1}/{epochs}")
+        for x, _ in pbar:
+            x = x.to(device)
+            t = torch.randint(0, T, (x.size(0),), device=device)
+            noise = torch.randn_like(x)
+            xt = q_sample(x, t, noise, sqrt_alpha_bar, sqrt_one_minus_alpha_bar)
+            noise_pred = model(xt, t)
+            loss = F.mse_loss(noise_pred, noise)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            pbar.set_postfix(loss=loss.item())
+
+    torch.save(model.state_dict(), "diffusion_ddpm_mnist.pt")
+
+# -------------------------
+# Sampling
+# -------------------------
+@torch.no_grad()
+def sample(T=200):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = SimpleDenoiser().to(device)
+    model.load_state_dict(torch.load("diffusion_ddpm_mnist.pt", map_location=device))
+    model.eval()
+
+    betas = linear_beta_schedule(T).to(device)
+    alphas = 1.0 - betas
+    alpha_bar = torch.cumprod(alphas, dim=0)
+
+    x = torch.randn(16, 1, 28, 28).to(device)
+
+    for t in reversed(range(T)):
+        noise_pred = model(x, torch.tensor([t]).to(device))
+        x = (1 / torch.sqrt(alphas[t])) * (
+            x - (betas[t] / torch.sqrt(1 - alpha_bar[t])) * noise_pred
+        )
+        if t > 0:
+            x += torch.sqrt(betas[t]) * torch.randn_like(x)
+
+    save_image((x + 1) / 2, "samples.png", nrow=4)
+
+# -------------------------
+# Main
+# -------------------------
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--train", action="store_true")
+    parser.add_argument("--sample", action="store_true")
+    parser.add_argument("--epochs", type=int, default=5)
+    args = parser.parse_args()
+
+    if args.train:
+        train(epochs=args.epochs)
+    elif args.sample:
+        sample()
